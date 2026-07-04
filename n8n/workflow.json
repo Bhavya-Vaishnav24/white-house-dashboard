@@ -1,0 +1,121 @@
+{
+  "name": "White House Cafe - WhatsApp Order Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "new-order-webhook",
+        "options": {}
+      },
+      "id": "1d8bf6ea-d9fc-4c4f-8cf9-0c6be4be69bf",
+      "name": "Supabase Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        380,
+        240
+      ],
+      "webhookId": "new-order-webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/YOUR_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"{{$json.body.record.phone ? $json.body.record.phone : $json.body.phone}}\",\n  \"type\": \"template\",\n  \"template\": {\n    \"name\": \"order_confirmation\",\n    \"language\": {\n      \"code\": \"en_US\"\n    },\n    \"components\": [\n      {\n        \"type\": \"body\",\n        \"parameters\": [\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.customer_name ? $json.body.record.customer_name : $json.body.customer_name}}\" },\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.id ? $json.body.record.id : $json.body.order_id}}\" },\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.item_summary ? $json.body.record.item_summary : $json.body.item_summary}}\" },\n          { \"type\": \"text\", \"text\": \"₹{{$json.body.record.total ? $json.body.record.total : $json.body.total}}\" }\n        ]\n      }\n    ]\n  }\n}",
+        "options": {}
+      },
+      "id": "a9a83ee1-fbe8-466d-a60d-ebcb58a4f107",
+      "name": "Send WhatsApp to Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        640,
+        240
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp_token_credential_placeholder",
+          "name": "Meta Cloud API Access Token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://graph.facebook.com/v18.0/YOUR_PHONE_NUMBER_ID/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "bodyParameters": {
+          "parameters": []
+        },
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"recipient_type\": \"individual\",\n  \"to\": \"YOUR_ADMIN_PHONE_NUMBER\",\n  \"type\": \"template\",\n  \"template\": {\n    \"name\": \"new_order_alert_admin\",\n    \"language\": {\n      \"code\": \"en_US\"\n    },\n    \"components\": [\n      {\n        \"type\": \"body\",\n        \"parameters\": [\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.customer_name ? $json.body.record.customer_name : $json.body.customer_name}}\" },\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.id ? $json.body.record.id : $json.body.order_id}}\" },\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.item_summary ? $json.body.record.item_summary : $json.body.item_summary}}\" },\n          { \"type\": \"text\", \"text\": \"₹{{$json.body.record.total ? $json.body.record.total : $json.body.total}}\" },\n          { \"type\": \"text\", \"text\": \"{{$json.body.record.maps_link ? $json.body.record.maps_link : 'No location link'}}\" }\n        ]\n      }\n    ]\n  }\n}",
+        "options": {}
+      },
+      "id": "e0e20e8a-e9fa-45b0-bfb9-cb21f8aef44b",
+      "name": "Notify Admin via WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        640,
+        400
+      ],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "whatsapp_token_credential_placeholder",
+          "name": "Meta Cloud API Access Token"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Supabase Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Send WhatsApp to Customer",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Notify Admin via WhatsApp",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {},
+  "staticData": null,
+  "meta": {
+    "templateId": null
+  },
+  "pinData": {}
+}
