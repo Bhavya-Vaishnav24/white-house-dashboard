@@ -410,8 +410,8 @@ export default function App() {
       
       const { data, error } = await client
         .from('orders')
-        .select('*')
-        .in('order_status', ['pending', 'preparing', 'out_for_delivery'])
+        .select('*, manual_address, latitude, longitude, maps_link')
+        .in('order_status', ['new', 'pending', 'preparing', 'out_for_delivery'])
         .order('created_at', { ascending: false })
         .range(start, end)
         
@@ -451,7 +451,7 @@ export default function App() {
       
       const { data, error } = await client
         .from('orders')
-        .select('*')
+        .select('*, manual_address, latitude, longitude, maps_link')
         .eq('order_status', 'delivered')
         .order('created_at', { ascending: false })
         .range(start, end)
@@ -492,7 +492,7 @@ export default function App() {
       
       const { data, error } = await client
         .from('orders')
-        .select('*')
+        .select('*, manual_address, latitude, longitude, maps_link')
         .eq('order_status', 'cancelled')
         .order('created_at', { ascending: false })
         .range(start, end)
@@ -591,10 +591,11 @@ export default function App() {
       out_for_delivery: 0,
       delivered: 0,
       cancelled: 0,
-      pending: 0
+      pending: 0,
+      new: 0
     }
     rawOrders.forEach(o => {
-      const s = (o.order_status || 'pending').toLowerCase()
+      const s = (o.order_status || 'new').toLowerCase()
       if (s in statusCounts) {
         statusCounts[s as keyof typeof statusCounts]++
       }
@@ -661,10 +662,9 @@ export default function App() {
         cutoff.setHours(0, 0, 0, 0)
       }
 
-      // Query only specific columns for efficiency
       const { data, error } = await client
         .from('orders')
-        .select('created_at, total, order_status, items, item_summary')
+        .select('created_at, total, order_status, items, item_summary, manual_address, latitude, longitude, maps_link')
         .gte('created_at', cutoff.toISOString())
 
       if (error) throw error
@@ -701,9 +701,9 @@ export default function App() {
         { event: 'INSERT', schema: 'public', table: 'orders' },
         (payload) => {
           const newOrder = payload.new as SupabaseOrder
-          const status = (newOrder.order_status || 'pending').toLowerCase()
+          const status = (newOrder.order_status || 'new').toLowerCase()
 
-          if (['pending', 'preparing', 'out_for_delivery'].includes(status)) {
+          if (['new', 'pending', 'preparing', 'out_for_delivery'].includes(status)) {
             setOrders(prev => {
               if (prev.some(o => o.id === newOrder.id)) return prev
               return [newOrder, ...prev]
@@ -735,9 +735,9 @@ export default function App() {
         { event: 'UPDATE', schema: 'public', table: 'orders' },
         (payload) => {
           const updatedOrder = payload.new as SupabaseOrder
-          const status = (updatedOrder.order_status || 'pending').toLowerCase()
+          const status = (updatedOrder.order_status || 'new').toLowerCase()
 
-          if (['pending', 'preparing', 'out_for_delivery'].includes(status)) {
+          if (['new', 'pending', 'preparing', 'out_for_delivery'].includes(status)) {
             // Add/update in active list
             setOrders(prev => {
               const exists = prev.some(o => o.id === updatedOrder.id)
@@ -812,7 +812,7 @@ export default function App() {
     // Apply optimistic updates to local state instantly
     if (statusType === 'order') {
       const valLower = newValue.toLowerCase()
-      if (['pending', 'preparing', 'out_for_delivery'].includes(valLower)) {
+      if (['new', 'pending', 'preparing', 'out_for_delivery'].includes(valLower)) {
         // Move to Active Orders list or update in place
         setOrders(prev => {
           const target = prev.find(o => o.id === orderId) || previousDelivered.find(o => o.id === orderId) || previousCancelled.find(o => o.id === orderId)
@@ -1076,7 +1076,7 @@ export default function App() {
       const { data, error } = await client
         .from('orders')
         .insert(orderData)
-        .select()
+        .select('*, manual_address, latitude, longitude, maps_link')
         .single()
 
       if (error) throw error
@@ -1152,6 +1152,7 @@ export default function App() {
     const statusCounts = analyticsData.statusCounts || {}
     
     const totalOrders = trend.reduce((sum: number, d: any) => sum + d.orders, 0)
+    const newOrders = statusCounts.new || 0
     const pendingOrders = statusCounts.pending || 0
     const preparingOrders = statusCounts.preparing || 0
     const outForDeliveryOrders = statusCounts.out_for_delivery || 0
@@ -1161,7 +1162,7 @@ export default function App() {
 
     return {
       totalOrders,
-      pendingOrders: pendingOrders + preparingOrders + outForDeliveryOrders, // total active pending
+      pendingOrders: newOrders + pendingOrders + preparingOrders + outForDeliveryOrders, // total active pending
       deliveredOrders,
       totalRevenue
     }
@@ -1231,11 +1232,10 @@ export default function App() {
         summaryMatch.includes(query) ||
         idMatch.includes(query)
 
-      // Active status sub-filtering
       if (orderQueue === 'active') {
-        const orderStatusNormalized = (order.order_status || 'pending').toLowerCase()
+        const orderStatusNormalized = (order.order_status || 'new').toLowerCase()
         const matchesStatus = activeStatusFilter === 'All Active' || 
-          (activeStatusFilter === 'Pending' && orderStatusNormalized === 'pending') ||
+          (activeStatusFilter === 'Pending' && (orderStatusNormalized === 'pending' || orderStatusNormalized === 'new')) ||
           (activeStatusFilter === 'Preparing' && orderStatusNormalized === 'preparing') ||
           (activeStatusFilter === 'Out for Delivery' && orderStatusNormalized === 'out_for_delivery')
         
