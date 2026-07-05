@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS public.orders (
   payment_status text default 'pending',
   order_status text default 'new',
   maps_link text,
+  manual_address text,
   created_at timestamp default now()
 );
 
