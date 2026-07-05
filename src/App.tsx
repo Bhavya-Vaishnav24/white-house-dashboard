@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react'
 import {
   ShoppingBag, Plus, Minus, Trash2, MapPin, Search, Phone,
-  LogOut, Bell, Clock, CreditCard, CheckCircle,
-  ArrowRight, Lock, Filter, X, ExternalLink, Flame, Star
+  Bell, Clock, CheckCircle,
+  ArrowRight, Lock, X, ExternalLink, Flame, Star
 } from 'lucide-react'
 import {
   supabase
@@ -279,19 +279,7 @@ const playChime = () => {
   }
 }
 
-// Parses latitude/longitude from google maps link q=lat,lng
-const getCoordinatesFromUrl = (url: string) => {
-  if (!url) return null
-  try {
-    const match = url.match(/q=([-+]?\d*\.\d+|\d+),([-+]?\d*\.\d+|\d+)/)
-    if (match && match[1] && match[2]) {
-      return { lat: parseFloat(match[1]), lng: parseFloat(match[2]) }
-    }
-  } catch (e) {
-    console.error('Error parsing coordinates from maps url:', e)
-  }
-  return null
-}
+
 
 export default function App() {
   // Navigation: 'customer' | 'admin'
@@ -340,8 +328,6 @@ export default function App() {
   const [orders, setOrders] = useState<SupabaseOrder[]>([])
   const [loadingOrders, setLoadingOrders] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
-  const [statusFilter, setStatusFilter] = useState('All')
-  const [paymentFilter, setPaymentFilter] = useState('All')
   const [selectedOrder, setSelectedOrder] = useState<SupabaseOrder | null>(null)
   const [newOrderToast, setNewOrderToast] = useState<{ id: string; name: string } | null>(null)
   const [statusToast, setStatusToast] = useState<string | null>(null)
