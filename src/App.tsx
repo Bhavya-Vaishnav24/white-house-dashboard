@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useMemo } from 'react'
 import {
   ShoppingBag, Plus, Minus, Trash2, MapPin, Search, Phone,
   LogOut, Bell, Clock, CreditCard, CheckCircle,
@@ -295,7 +295,7 @@ const getCoordinatesFromUrl = (url: string) => {
 
 export default function App() {
   // Navigation: 'customer' | 'admin'
-  const [view, setView] = useState<'customer' | 'admin'>('customer')
+  const [view, setView] = useState<'customer' | 'admin'>('admin')
 
   // --- CUSTOMER APP STATES ---
   const [activeCategory, setActiveCategory] = useState('All')
@@ -344,6 +344,31 @@ export default function App() {
   const [paymentFilter, setPaymentFilter] = useState('All')
   const [selectedOrder, setSelectedOrder] = useState<SupabaseOrder | null>(null)
   const [newOrderToast, setNewOrderToast] = useState<{ id: string; name: string } | null>(null)
+  const [statusToast, setStatusToast] = useState<string | null>(null)
+  const [page, setPage] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+
+  // --- ANALYTICS STATES ---
+  const [analyticsFilter, setAnalyticsFilter] = useState<'Daily' | 'Weekly' | 'Monthly'>('Weekly')
+  const [analyticsCache, setAnalyticsCache] = useState<Record<string, any>>({})
+  const [analyticsData, setAnalyticsData] = useState<any | null>(null)
+  const [loadingAnalytics, setLoadingAnalytics] = useState(false)
+
+  // --- ORDER SEGREGATION STATES ---
+  const [orderQueue, setOrderQueue] = useState<'active' | 'delivered' | 'cancelled'>('active')
+  const [activeStatusFilter, setActiveStatusFilter] = useState<'All Active' | 'Pending' | 'Preparing' | 'Out for Delivery'>('All Active')
+  
+  // Delivered Queue States
+  const [deliveredOrders, setDeliveredOrders] = useState<SupabaseOrder[]>([])
+  const [loadingDelivered, setLoadingDelivered] = useState(false)
+  const [deliveredPage, setDeliveredPage] = useState(0)
+  const [hasMoreDelivered, setHasMoreDelivered] = useState(true)
+
+  // Cancelled Queue States
+  const [cancelledOrders, setCancelledOrders] = useState<SupabaseOrder[]>([])
+  const [loadingCancelled, setLoadingCancelled] = useState(false)
+  const [cancelledPage, setCancelledPage] = useState(0)
+  const [hasMoreCancelled, setHasMoreCancelled] = useState(true)
 
   // Webhook and connection integrations from build environment variables
   const n8nWebhookUrl = import.meta.env.VITE_N8N_WEBHOOK_URL || ''
@@ -352,10 +377,10 @@ export default function App() {
   useEffect(() => {
     const handleUrlRouting = () => {
       const path = window.location.pathname
-      if (path.startsWith('/admin')) {
-        setView('admin')
-      } else {
+      if (path.startsWith('/customer')) {
         setView('customer')
+      } else {
+        setView('admin')
       }
     }
     handleUrlRouting()
@@ -387,12 +412,301 @@ export default function App() {
     return () => subscription.unsubscribe()
   }, [])
 
+  // Get active orders list (paginated, 20 items per page)
+  const fetchOrders = async (reset = false) => {
+    const client = supabase
+    if (!client) return
+    setLoadingOrders(true)
+    try {
+      const PAGE_SIZE = 20
+      const start = reset ? 0 : page * PAGE_SIZE
+      const end = start + PAGE_SIZE - 1
+      
+      const { data, error } = await client
+        .from('orders')
+        .select('*')
+        .in('order_status', ['pending', 'preparing', 'out_for_delivery'])
+        .order('created_at', { ascending: false })
+        .range(start, end)
+        
+      if (error) throw error
+      
+      const fetchedOrders = data || []
+      
+      if (reset) {
+        setOrders(fetchedOrders)
+        setPage(1)
+        setHasMore(fetchedOrders.length === PAGE_SIZE)
+      } else {
+        setOrders(prev => {
+          const existingIds = new Set(prev.map(o => o.id))
+          const newOrders = fetchedOrders.filter(o => !existingIds.has(o.id))
+          return [...prev, ...newOrders]
+        })
+        setPage(prev => prev + 1)
+        setHasMore(fetchedOrders.length === PAGE_SIZE)
+      }
+    } catch (err: any) {
+      console.error('Error loading active orders:', err.message)
+    } finally {
+      setLoadingOrders(false)
+    }
+  }
+
+  // Get delivered orders list (paginated, 20 items per page)
+  const fetchDeliveredOrders = async (reset = false) => {
+    const client = supabase
+    if (!client) return
+    setLoadingDelivered(true)
+    try {
+      const PAGE_SIZE = 20
+      const start = reset ? 0 : deliveredPage * PAGE_SIZE
+      const end = start + PAGE_SIZE - 1
+      
+      const { data, error } = await client
+        .from('orders')
+        .select('*')
+        .eq('order_status', 'delivered')
+        .order('created_at', { ascending: false })
+        .range(start, end)
+        
+      if (error) throw error
+      
+      const fetchedOrders = data || []
+      
+      if (reset) {
+        setDeliveredOrders(fetchedOrders)
+        setDeliveredPage(1)
+        setHasMoreDelivered(fetchedOrders.length === PAGE_SIZE)
+      } else {
+        setDeliveredOrders(prev => {
+          const existingIds = new Set(prev.map(o => o.id))
+          const newOrders = fetchedOrders.filter(o => !existingIds.has(o.id))
+          return [...prev, ...newOrders]
+        })
+        setDeliveredPage(prev => prev + 1)
+        setHasMoreDelivered(fetchedOrders.length === PAGE_SIZE)
+      }
+    } catch (err: any) {
+      console.error('Error loading delivered orders:', err.message)
+    } finally {
+      setLoadingDelivered(false)
+    }
+  }
+
+  // Get cancelled orders list (paginated, 20 items per page)
+  const fetchCancelledOrders = async (reset = false) => {
+    const client = supabase
+    if (!client) return
+    setLoadingCancelled(true)
+    try {
+      const PAGE_SIZE = 20
+      const start = reset ? 0 : cancelledPage * PAGE_SIZE
+      const end = start + PAGE_SIZE - 1
+      
+      const { data, error } = await client
+        .from('orders')
+        .select('*')
+        .eq('order_status', 'cancelled')
+        .order('created_at', { ascending: false })
+        .range(start, end)
+        
+      if (error) throw error
+      
+      const fetchedOrders = data || []
+      
+      if (reset) {
+        setCancelledOrders(fetchedOrders)
+        setCancelledPage(1)
+        setHasMoreCancelled(fetchedOrders.length === PAGE_SIZE)
+      } else {
+        setCancelledOrders(prev => {
+          const existingIds = new Set(prev.map(o => o.id))
+          const newOrders = fetchedOrders.filter(o => !existingIds.has(o.id))
+          return [...prev, ...newOrders]
+        })
+        setCancelledPage(prev => prev + 1)
+        setHasMoreCancelled(fetchedOrders.length === PAGE_SIZE)
+      }
+    } catch (err: any) {
+      console.error('Error loading cancelled orders:', err.message)
+    } finally {
+      setLoadingCancelled(false)
+    }
+  }
+
+  // Load appropriate queue tab from Supabase lazily
+  useEffect(() => {
+    if (adminSession && view === 'admin') {
+      if (orderQueue === 'active' && orders.length === 0) {
+        fetchOrders(true)
+      } else if (orderQueue === 'delivered' && deliveredOrders.length === 0) {
+        fetchDeliveredOrders(true)
+      } else if (orderQueue === 'cancelled' && cancelledOrders.length === 0) {
+        fetchCancelledOrders(true)
+      }
+    }
+  }, [orderQueue, adminSession, view])
+
+  // Ref to always hold the latest analytics filter value for stable effect closures
+  const analyticsFilterRef = useRef<'Daily' | 'Weekly' | 'Monthly'>('Weekly')
+  useEffect(() => {
+    analyticsFilterRef.current = analyticsFilter
+  }, [analyticsFilter])
+
+  // Helper to process raw orders into structured analytics data
+  const processAnalytics = (rawOrders: any[], range: 'Daily' | 'Weekly' | 'Monthly') => {
+    let trendData: { label: string; sales: number; orders: number }[] = []
+
+    if (range === 'Daily') {
+      const hours = Array.from({ length: 24 }, (_, i) => i)
+      trendData = hours.map(h => {
+        const hStr = h.toString().padStart(2, '0') + ':00'
+        const matches = rawOrders.filter(o => {
+          const d = new Date(o.created_at)
+          return d.getHours() === h
+        })
+        const sales = matches.reduce((sum, o) => sum + (o.total || 0), 0)
+        return { label: hStr, sales, orders: matches.length }
+      })
+    } else if (range === 'Weekly') {
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+      const last7Days = Array.from({ length: 7 }, (_, i) => {
+        const d = new Date()
+        d.setDate(d.getDate() - i)
+        return d
+      }).reverse()
+
+      trendData = last7Days.map(d => {
+        const label = days[d.getDay()]
+        const dateStr = d.toDateString()
+        const matches = rawOrders.filter(o => new Date(o.created_at).toDateString() === dateStr)
+        const sales = matches.reduce((sum, o) => sum + (o.total || 0), 0)
+        return { label, sales, orders: matches.length }
+      })
+    } else {
+      const last30Days = Array.from({ length: 30 }, (_, i) => {
+        const d = new Date()
+        d.setDate(d.getDate() - i)
+        return d
+      }).reverse()
+
+      trendData = last30Days.map(d => {
+        const label = d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+        const dateStr = d.toDateString()
+        const matches = rawOrders.filter(o => new Date(o.created_at).toDateString() === dateStr)
+        const sales = matches.reduce((sum, o) => sum + (o.total || 0), 0)
+        return { label, sales, orders: matches.length }
+      })
+    }
+
+    const statusCounts = {
+      preparing: 0,
+      out_for_delivery: 0,
+      delivered: 0,
+      cancelled: 0,
+      pending: 0
+    }
+    rawOrders.forEach(o => {
+      const s = (o.order_status || 'pending').toLowerCase()
+      if (s in statusCounts) {
+        statusCounts[s as keyof typeof statusCounts]++
+      }
+    })
+
+    const itemsMap: Record<string, number> = {}
+    rawOrders.forEach(o => {
+      if (o.items && Array.isArray(o.items)) {
+        o.items.forEach((cartItem: any) => {
+          if (cartItem.isAddressMetadata) return
+          const name = cartItem.item?.name || cartItem.name || 'Unknown Item'
+          const qty = cartItem.quantity || 1
+          itemsMap[name] = (itemsMap[name] || 0) + qty
+        })
+      } else if (o.item_summary) {
+        const parts = o.item_summary.split(',')
+        parts.forEach((p: string) => {
+          const trimmed = p.trim()
+          const match = trimmed.match(/^(\d+)x\s+(.+)$/)
+          if (match) {
+            const qty = parseInt(match[1]) || 1
+            const name = match[2].trim()
+            itemsMap[name] = (itemsMap[name] || 0) + qty
+          } else if (trimmed) {
+            itemsMap[trimmed] = (itemsMap[trimmed] || 0) + 1
+          }
+        })
+      }
+    })
+
+    const topItems = Object.entries(itemsMap)
+      .map(([name, quantity]) => ({ name, quantity }))
+      .sort((a, b) => b.quantity - a.quantity)
+      .slice(0, 5)
+
+    return {
+      trendData,
+      statusCounts,
+      topItems
+    }
+  }
+
+  // Fetch only necessary analytics metrics and cache results
+  const fetchAnalyticsData = async (range: 'Daily' | 'Weekly' | 'Monthly', bypassCache = false) => {
+    // Check cache
+    if (!bypassCache && analyticsCache[range]) {
+      setAnalyticsData(analyticsCache[range])
+      return
+    }
+
+    const client = supabase
+    if (!client) return
+
+    setLoadingAnalytics(true)
+    try {
+      const cutoff = new Date()
+      if (range === 'Daily') {
+        cutoff.setHours(0, 0, 0, 0)
+      } else if (range === 'Weekly') {
+        cutoff.setDate(cutoff.getDate() - 7)
+        cutoff.setHours(0, 0, 0, 0)
+      } else {
+        cutoff.setDate(cutoff.getDate() - 30)
+        cutoff.setHours(0, 0, 0, 0)
+      }
+
+      // Query only specific columns for efficiency
+      const { data, error } = await client
+        .from('orders')
+        .select('created_at, total, order_status, items, item_summary')
+        .gte('created_at', cutoff.toISOString())
+
+      if (error) throw error
+
+      const processed = processAnalytics(data || [], range)
+
+      setAnalyticsCache(prev => ({ ...prev, [range]: processed }))
+      setAnalyticsData(processed)
+    } catch (err: any) {
+      console.error('Error fetching analytics data:', err.message)
+    } finally {
+      setLoadingAnalytics(false)
+    }
+  }
+
+  // Fetch analytics whenever the filter changes
+  useEffect(() => {
+    if (adminSession && view === 'admin') {
+      fetchAnalyticsData(analyticsFilter)
+    }
+  }, [analyticsFilter, adminSession, view])
+
   // Admin orders realtime subscription
   useEffect(() => {
     const client = supabase
     if (!client || !adminSession) return
 
-    fetchOrders()
+    fetchOrders(true) // Initial reset load
 
     const ordersChannel = client
       .channel('orders-realtime-channel')
@@ -401,10 +715,33 @@ export default function App() {
         { event: 'INSERT', schema: 'public', table: 'orders' },
         (payload) => {
           const newOrder = payload.new as SupabaseOrder
-          setOrders(prev => [newOrder, ...prev])
-          playChime()
-          setNewOrderToast({ id: newOrder.id, name: newOrder.customer_name })
-          setTimeout(() => setNewOrderToast(null), 5000)
+          const status = (newOrder.order_status || 'pending').toLowerCase()
+
+          if (['pending', 'preparing', 'out_for_delivery'].includes(status)) {
+            setOrders(prev => {
+              if (prev.some(o => o.id === newOrder.id)) return prev
+              return [newOrder, ...prev]
+            })
+            playChime()
+            setNewOrderToast({ id: newOrder.id, name: newOrder.customer_name })
+            setTimeout(() => setNewOrderToast(null), 5000)
+          } else if (status === 'delivered') {
+            setDeliveredOrders(prev => {
+              if (prev.some(o => o.id === newOrder.id)) return prev
+              return [newOrder, ...prev]
+            })
+          } else if (status === 'cancelled') {
+            setCancelledOrders(prev => {
+              if (prev.some(o => o.id === newOrder.id)) return prev
+              return [newOrder, ...prev]
+            })
+          }
+
+          // Invalidate cache and refetch analytics
+          setAnalyticsCache({})
+          setTimeout(() => {
+            fetchAnalyticsData(analyticsFilterRef.current, true)
+          }, 200)
         }
       )
       .on(
@@ -412,10 +749,58 @@ export default function App() {
         { event: 'UPDATE', schema: 'public', table: 'orders' },
         (payload) => {
           const updatedOrder = payload.new as SupabaseOrder
-          setOrders(prev => prev.map(o => o.id === updatedOrder.id ? updatedOrder : o))
-          if (selectedOrder && selectedOrder.id === updatedOrder.id) {
-            setSelectedOrder(updatedOrder)
+          const status = (updatedOrder.order_status || 'pending').toLowerCase()
+
+          if (['pending', 'preparing', 'out_for_delivery'].includes(status)) {
+            // Add/update in active list
+            setOrders(prev => {
+              const exists = prev.some(o => o.id === updatedOrder.id)
+              if (exists) {
+                return prev.map(o => o.id === updatedOrder.id ? updatedOrder : o)
+              }
+              return [updatedOrder, ...prev]
+            })
+            // Remove from other lists
+            setDeliveredOrders(prev => prev.filter(o => o.id !== updatedOrder.id))
+            setCancelledOrders(prev => prev.filter(o => o.id !== updatedOrder.id))
+          } else if (status === 'delivered') {
+            // Remove from active & cancelled list
+            setOrders(prev => prev.filter(o => o.id !== updatedOrder.id))
+            setCancelledOrders(prev => prev.filter(o => o.id !== updatedOrder.id))
+            // Add/update in delivered list
+            setDeliveredOrders(prev => {
+              const exists = prev.some(o => o.id === updatedOrder.id)
+              if (exists) {
+                return prev.map(o => o.id === updatedOrder.id ? updatedOrder : o)
+              }
+              return [updatedOrder, ...prev]
+            })
+          } else if (status === 'cancelled') {
+            // Remove from active & delivered list
+            setOrders(prev => prev.filter(o => o.id !== updatedOrder.id))
+            setDeliveredOrders(prev => prev.filter(o => o.id !== updatedOrder.id))
+            // Add/update in cancelled list
+            setCancelledOrders(prev => {
+              const exists = prev.some(o => o.id === updatedOrder.id)
+              if (exists) {
+                return prev.map(o => o.id === updatedOrder.id ? updatedOrder : o)
+              }
+              return [updatedOrder, ...prev]
+            })
           }
+
+          setSelectedOrder(prev => {
+            if (prev && prev.id === updatedOrder.id) {
+              return updatedOrder
+            }
+            return prev
+          })
+
+          // Invalidate cache and refetch analytics
+          setAnalyticsCache({})
+          setTimeout(() => {
+            fetchAnalyticsData(analyticsFilterRef.current, true)
+          }, 200)
         }
       )
       .subscribe()
@@ -425,38 +810,124 @@ export default function App() {
     }
   }, [adminSession])
 
-  // Get orders list
-  const fetchOrders = async () => {
-    const client = supabase
-    if (!client) return
-    setLoadingOrders(true)
-    try {
-      const { data, error } = await client
-        .from('orders')
-        .select('*')
-        .order('created_at', { ascending: false })
-      if (error) throw error
-      setOrders(data || [])
-    } catch (err: any) {
-      console.error('Error loading orders:', err.message)
-    } finally {
-      setLoadingOrders(false)
-    }
-  }
-
-  // Handle Admin Status updates
+  // Handle Admin Status updates with optimistic updates and queue segregation
   const handleUpdateStatus = async (orderId: string, statusType: 'order' | 'payment', newValue: string) => {
     const client = supabase
     if (!client) return
+
+    const field = statusType === 'order' ? 'order_status' : 'payment_status'
+    
+    // Save previous state for rollback on error
+    const previousOrders = [...orders]
+    const previousDelivered = [...deliveredOrders]
+    const previousCancelled = [...cancelledOrders]
+    const previousSelectedOrder = selectedOrder ? { ...selectedOrder } : null
+
+    // Apply optimistic updates to local state instantly
+    if (statusType === 'order') {
+      const valLower = newValue.toLowerCase()
+      if (['pending', 'preparing', 'out_for_delivery'].includes(valLower)) {
+        // Move to Active Orders list or update in place
+        setOrders(prev => {
+          const target = prev.find(o => o.id === orderId) || previousDelivered.find(o => o.id === orderId) || previousCancelled.find(o => o.id === orderId)
+          if (target) {
+            const updated = { ...target, [field]: newValue }
+            const exists = prev.some(o => o.id === orderId)
+            if (exists) {
+              return prev.map(o => o.id === orderId ? updated : o)
+            }
+            return [updated, ...prev]
+          }
+          return prev
+        })
+        // Remove from others
+        setDeliveredOrders(prev => prev.filter(o => o.id !== orderId))
+        setCancelledOrders(prev => prev.filter(o => o.id !== orderId))
+      } else if (valLower === 'delivered') {
+        // Move to Delivered Orders list or update in place
+        setOrders(prev => prev.filter(o => o.id !== orderId))
+        setCancelledOrders(prev => prev.filter(o => o.id !== orderId))
+        setDeliveredOrders(prev => {
+          const target = previousOrders.find(o => o.id === orderId) || prev.find(o => o.id === orderId) || previousCancelled.find(o => o.id === orderId)
+          if (target) {
+            const updated = { ...target, [field]: newValue }
+            const exists = prev.some(o => o.id === orderId)
+            if (exists) {
+              return prev.map(o => o.id === orderId ? updated : o)
+            }
+            return [updated, ...prev]
+          }
+          return prev
+        })
+      } else if (valLower === 'cancelled') {
+        // Move to Cancelled Orders list or update in place
+        setOrders(prev => prev.filter(o => o.id !== orderId))
+        setDeliveredOrders(prev => prev.filter(o => o.id !== orderId))
+        setCancelledOrders(prev => {
+          const target = previousOrders.find(o => o.id === orderId) || previousDelivered.find(o => o.id === orderId) || prev.find(o => o.id === orderId)
+          if (target) {
+            const updated = { ...target, [field]: newValue }
+            const exists = prev.some(o => o.id === orderId)
+            if (exists) {
+              return prev.map(o => o.id === orderId ? updated : o)
+            }
+            return [updated, ...prev]
+          }
+          return prev
+        })
+      }
+    } else {
+      // Payment status change: update inside the list that contains the order
+      setOrders(prev => prev.map(o => o.id === orderId ? { ...o, [field]: newValue } : o))
+      setDeliveredOrders(prev => prev.map(o => o.id === orderId ? { ...o, [field]: newValue } : o))
+      setCancelledOrders(prev => prev.map(o => o.id === orderId ? { ...o, [field]: newValue } : o))
+    }
+
+    setSelectedOrder(prev => {
+      if (prev && prev.id === orderId) {
+        return { ...prev, [field]: newValue }
+      }
+      return prev
+    })
+
+    // Show instant status toast
+    if (statusType === 'order') {
+      let msg = `Order #${orderId} Status Updated`
+      if (newValue === 'preparing') msg = `Order #${orderId} Accepted`
+      if (newValue === 'out_for_delivery') msg = `Order #${orderId} Out for Delivery`
+      if (newValue === 'delivered') msg = `Order #${orderId} Delivered`
+      if (newValue === 'cancelled') msg = `Order #${orderId} Cancelled`
+      
+      setStatusToast(msg)
+      playChime()
+      setTimeout(() => setStatusToast(null), 4000)
+    } else {
+      setStatusToast(`Order #${orderId} Payment status: ${newValue.toUpperCase()}`)
+      playChime()
+      setTimeout(() => setStatusToast(null), 4000)
+    }
+
     try {
-      const field = statusType === 'order' ? 'order_status' : 'payment_status'
       const { error } = await client
         .from('orders')
         .update({ [field]: newValue })
         .eq('id', orderId)
 
       if (error) throw error
+
+      // Invalidate analytics cache and refetch for instant updates
+      setAnalyticsCache({})
+      setTimeout(() => {
+        fetchAnalyticsData(analyticsFilterRef.current, true)
+      }, 100)
     } catch (err: any) {
+      // Rollback on error
+      setOrders(previousOrders)
+      setDeliveredOrders(previousDelivered)
+      setCancelledOrders(previousCancelled)
+      if (previousSelectedOrder) {
+        setSelectedOrder(previousSelectedOrder)
+      }
       alert('Error updating status: ' + err.message)
     }
   }
@@ -691,7 +1162,7 @@ export default function App() {
   // Live order status poll (for success screen)
   useEffect(() => {
     const client = supabase
-    if (!placedOrder || !client) return
+    if (!placedOrder?.id || !client) return
 
     const successChannel = client
       .channel(`order-success-${placedOrder.id}`)
@@ -707,21 +1178,116 @@ export default function App() {
     return () => {
       client.removeChannel(successChannel)
     }
-  }, [placedOrder])
+  }, [placedOrder?.id])
 
-  // Filter & Search Orders (Admin Dashboard)
-  const filteredOrders = orders.filter(order => {
-    const matchesSearch =
-      order.customer_name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      order.phone.includes(searchQuery) ||
-      order.item_summary.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      order.id.toString().includes(searchQuery)
+  // Memoized stats calculation for the selected timeframe from analytics data
+  const timeframeStats = useMemo(() => {
+    if (!analyticsData) {
+      return {
+        totalOrders: 0,
+        pendingOrders: 0,
+        deliveredOrders: 0,
+        totalRevenue: 0
+      }
+    }
+    
+    const trend = analyticsData.trendData || []
+    const statusCounts = analyticsData.statusCounts || {}
+    
+    const totalOrders = trend.reduce((sum: number, d: any) => sum + d.orders, 0)
+    const pendingOrders = statusCounts.pending || 0
+    const preparingOrders = statusCounts.preparing || 0
+    const outForDeliveryOrders = statusCounts.out_for_delivery || 0
+    
+    const deliveredOrders = statusCounts.delivered || 0
+    const totalRevenue = trend.reduce((sum: number, d: any) => sum + d.sales, 0)
 
-    const matchesStatus = statusFilter === 'All' || order.order_status === statusFilter.toLowerCase()
-    const matchesPayment = paymentFilter === 'All' || order.payment_status === paymentFilter.toLowerCase()
+    return {
+      totalOrders,
+      pendingOrders: pendingOrders + preparingOrders + outForDeliveryOrders, // total active pending
+      deliveredOrders,
+      totalRevenue
+    }
+  }, [analyticsData])
 
-    return matchesSearch && matchesStatus && matchesPayment
-  })
+  const renderOrderSummary = (order: SupabaseOrder) => {
+    if (order.items && Array.isArray(order.items)) {
+      const foodItems = order.items.filter((i: any) => !i.isAddressMetadata)
+      return (
+        <div className="order-summary-block">
+          {foodItems.map((cartItem: any, idx: number) => {
+            const qty = cartItem.quantity || 1
+            const name = cartItem.item?.name || 'Item'
+            const price = cartItem.activePrice || cartItem.item?.price || 0
+            return (
+              <div key={idx} className="order-summary-item">
+                <span>{qty}x {name}</span>
+                <span>₹{price * qty}</span>
+              </div>
+            )
+          })}
+          <div className="order-summary-item">
+            <span>Packaging</span>
+            <span>₹{order.packaging || 0}</span>
+          </div>
+          <div className="order-summary-item total-line">
+            <span>Total</span>
+            <span>₹{order.total}</span>
+          </div>
+        </div>
+      )
+    }
+
+    return (
+      <div className="order-summary-block">
+        <div style={{ whiteSpace: 'pre-line' }}>{order.item_summary}</div>
+        <div className="order-summary-item" style={{ marginTop: '0.5rem' }}>
+          <span>Packaging</span>
+          <span>₹{order.packaging || 0}</span>
+        </div>
+        <div className="order-summary-item total-line">
+          <span>Total</span>
+          <span>₹{order.total}</span>
+        </div>
+      </div>
+    )
+  }
+
+  // Memoized Filter & Search Orders (Admin Dashboard)
+  const filteredOrders = useMemo(() => {
+    const query = searchQuery.toLowerCase().trim()
+    
+    // Choose correct list based on active queue tab
+    let currentList = orders
+    if (orderQueue === 'delivered') currentList = deliveredOrders
+    if (orderQueue === 'cancelled') currentList = cancelledOrders
+
+    return currentList.filter(order => {
+      const nameMatch = order.customer_name?.toLowerCase() || ''
+      const phoneMatch = order.phone || ''
+      const summaryMatch = order.item_summary?.toLowerCase() || ''
+      const idMatch = order.id?.toString() || ''
+      
+      const matchesSearch = !query || 
+        nameMatch.includes(query) ||
+        phoneMatch.includes(query) ||
+        summaryMatch.includes(query) ||
+        idMatch.includes(query)
+
+      // Active status sub-filtering
+      if (orderQueue === 'active') {
+        const orderStatusNormalized = (order.order_status || 'pending').toLowerCase()
+        const matchesStatus = activeStatusFilter === 'All Active' || 
+          (activeStatusFilter === 'Pending' && orderStatusNormalized === 'pending') ||
+          (activeStatusFilter === 'Preparing' && orderStatusNormalized === 'preparing') ||
+          (activeStatusFilter === 'Out for Delivery' && orderStatusNormalized === 'out_for_delivery')
+        
+        return matchesSearch && matchesStatus
+      }
+
+      return matchesSearch
+    })
+  }, [orders, deliveredOrders, cancelledOrders, orderQueue, searchQuery, activeStatusFilter])
 
   // Filter menu items by Category + Veg + Search (Customer Digital Menu)
   const displayedMenuItems = MENU_ITEMS.filter(item => {
@@ -738,6 +1304,10 @@ export default function App() {
 
   // Popular items filter
   const popularMenuItems = MENU_ITEMS.filter(item => item.popular === true)
+
+  // Helper constants to dynamically map loading and pagination boundaries for segregated queues
+  const loadingQueue = orderQueue === 'active' ? loadingOrders : orderQueue === 'delivered' ? loadingDelivered : loadingCancelled
+  const queueHasMore = orderQueue === 'active' ? hasMore : orderQueue === 'delivered' ? hasMoreDelivered : hasMoreCancelled
 
   return (
     <div className="app-root">
@@ -1348,320 +1918,710 @@ export default function App() {
             </div>
           ) : (
             /* Admin Dashboard Layout */
-            <div className="dashboard-grid">
-              {/* Sidebar */}
-              <aside className="sidebar">
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '2.5rem' }}>
-                  <div style={{ width: '36px', height: '36px', borderRadius: '8px', backgroundColor: 'var(--accent)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '1rem', fontFamily: 'var(--font-serif)' }}>W</div>
-                  <div>
-                    <h2 className="brand-title" style={{ fontSize: '1rem' }}>White House</h2>
-                    <p style={{ fontSize: '0.6rem', color: 'var(--accent)', fontWeight: 'bold', marginTop: '-2px', textTransform: 'uppercase' }}>Console</p>
+            <div className="admin-dashboard-container">
+              {/* Header */}
+              <header className="dashboard-header-block">
+                <div className="brand-badge-pill">
+                  <ShoppingBag size={10} /> WHITE HOUSE CAFE
+                </div>
+                <h1 className="dashboard-main-title">Mobile Order Dashboard</h1>
+                <p className="dashboard-subtitle" style={{ marginBottom: '1.25rem' }}>
+                  Optimized for phone use with tap-to-call and tap-to-open Google Maps.
+                </p>
+
+                {/* Dashboard Timeframe Filter Toggle governed by one filter button */}
+                <div className="filter-slider" style={{ margin: '0 auto', padding: '0.2rem', borderRadius: '8px', background: 'rgba(255,255,255,0.02)', justifyContent: 'center', width: 'fit-content' }}>
+                  {(['Daily', 'Weekly', 'Monthly'] as const).map(range => (
+                    <button
+                      key={range}
+                      className={`filter-slider-btn ${analyticsFilter === range ? 'active' : ''}`}
+                      style={{ padding: '0.4rem 1.25rem', fontSize: '0.8rem', height: 'auto', borderRadius: '6px' }}
+                      onClick={() => setAnalyticsFilter(range)}
+                    >
+                      {range}
+                    </button>
+                  ))}
+                </div>
+              </header>
+
+              {/* Stats Cards Section (4 synchronized KPI cards) */}
+              <section className="stats-grid-container" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '1rem' }}>
+                {/* Card 1: Total Orders */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Total Orders ({analyticsFilter})</span>
+                    <div className="stat-card-icon-wrapper">
+                      <ShoppingBag size={14} />
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    {timeframeStats.totalOrders}
                   </div>
                 </div>
 
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', flexGrow: 1 }}>
-                  <div style={{ color: 'var(--text-muted)', fontSize: '0.7rem', fontWeight: 'bold', textTransform: 'uppercase', paddingLeft: '0.5rem', marginBottom: '0.5rem' }}>Main</div>
-                  <button className="btn btn-secondary" style={{ justifyContent: 'flex-start', backgroundColor: 'rgba(255, 255, 255, 0.04)', borderColor: 'var(--border-focus)' }}>
-                    <Bell size={16} /> Live Orders
-                  </button>
+                {/* Card 2: Pending Orders */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Pending Orders ({analyticsFilter})</span>
+                    <div className="stat-card-icon-wrapper pending">
+                      <Clock size={14} />
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    {timeframeStats.pendingOrders}
+                  </div>
                 </div>
 
-                <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1.5rem' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '1rem' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: 'var(--success)' }}></div>
-                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }} title={adminSession.user.email}>{adminSession.user.email.split('@')[0]} (Admin)</span>
+                {/* Card 3: Delivered Orders */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Delivered Orders ({analyticsFilter})</span>
+                    <div className="stat-card-icon-wrapper delivered">
+                      <CheckCircle size={14} />
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    {timeframeStats.deliveredOrders}
+                  </div>
+                </div>
+
+                {/* Card 4: Total Revenue */}
+                <div className="dashboard-stat-card">
+                  <div className="stat-card-top">
+                    <span className="stat-card-lbl">Total Revenue ({analyticsFilter})</span>
+                    <div className="stat-card-icon-wrapper">
+                      <span style={{ fontSize: '0.85rem', fontWeight: 'bold' }}>₹</span>
+                    </div>
+                  </div>
+                  <div className="stat-card-val">
+                    ₹{timeframeStats.totalRevenue.toLocaleString('en-IN')}
+                  </div>
+                </div>
+              </section>
+
+              {/* Analytics Section */}
+              <section id="dashboard-analytics-section" className="analytics-section-card order-glass-card" style={{ marginTop: '1.5rem', padding: '1.5rem', borderRadius: '16px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+                  <div>
+                    <h2 className="brand-title" style={{ fontSize: '1.1rem', margin: 0 }}>Analytics Overview</h2>
+                    <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Trend details for the selected period ({analyticsFilter})</span>
+                  </div>
+                </div>
+
+                {loadingAnalytics || !analyticsData ? (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem', height: '300px', alignItems: 'center', justifyContent: 'center' }}>
+                    <div className="skeleton" style={{ height: '220px', borderRadius: '12px', width: '100%' }}></div>
+                    <div className="skeleton" style={{ height: '220px', borderRadius: '12px', width: '100%' }}></div>
+                  </div>
+                ) : (
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '1.5rem' }}>
+                    
+                    {/* Chart 1: Sales Trend */}
+                    <div className="chart-box" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '12px', padding: '1.25rem' }}>
+                      <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Sales Trend ({analyticsFilter})</h4>
+                      {(() => {
+                        const trend = analyticsData.trendData || []
+                        const maxVal = Math.max(...trend.map((d: any) => d.sales), 100)
+                        const width = 500
+                        const height = 150
+                        const points = trend.map((d: any, i: number) => {
+                          const x = (i / Math.max(trend.length - 1, 1)) * (width - 40) + 20
+                          const y = height - (d.sales / maxVal) * (height - 30) - 15
+                          return { x, y }
+                        })
+                        const pathD = points.map((p: any, i: number) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ')
+                        const areaD = points.length ? `${pathD} L ${points[points.length - 1].x} ${height - 10} L ${points[0].x} ${height - 10} Z` : ''
+
+                        return (
+                          <div style={{ position: 'relative' }}>
+                            <svg viewBox={`0 0 ${width} ${height}`} width="100%" height={height} style={{ overflow: 'visible' }}>
+                              <defs>
+                                <linearGradient id="salesAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                                  <stop offset="0%" stopColor="var(--accent)" stopOpacity="0.25" />
+                                  <stop offset="100%" stopColor="var(--accent)" stopOpacity="0.0" />
+                                </linearGradient>
+                              </defs>
+                              {/* Grid lines */}
+                              <line x1="20" y1={height - 10} x2={width - 20} y2={height - 10} stroke="rgba(255,255,255,0.05)" strokeWidth="1" />
+                              <line x1="20" y1={height / 2} x2={width - 20} y2={height / 2} stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3" />
+                              <line x1="20" y1="20" x2={width - 20} y2="20" stroke="rgba(255,255,255,0.03)" strokeWidth="1" strokeDasharray="3" />
+                              
+                              {/* Filled Area */}
+                              {areaD && <path d={areaD} fill="url(#salesAreaGrad)" />}
+                              {/* Line */}
+                              {pathD && <path d={pathD} fill="none" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />}
+                              
+                              {/* Points */}
+                              {points.length <= 12 && points.map((p: any, i: number) => (
+                                <circle key={i} cx={p.x} cy={p.y} r="3" fill="rgba(20,20,20,0.9)" stroke="var(--accent)" strokeWidth="2" />
+                              ))}
+                            </svg>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.4rem', padding: '0 0.5rem' }}>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{trend[0]?.label}</span>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{trend[Math.floor(trend.length / 2)]?.label}</span>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{trend[trend.length - 1]?.label}</span>
+                            </div>
+                            <div style={{ position: 'absolute', top: 0, right: 0, fontSize: '0.95rem', fontWeight: 'bold', color: 'var(--accent)' }}>
+                              ₹{trend.reduce((sum: number, d: any) => sum + d.sales, 0).toLocaleString('en-IN')}
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+
+                    {/* Chart 2: Orders Count */}
+                    <div className="chart-box" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '12px', padding: '1.25rem' }}>
+                      <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Orders Volume ({analyticsFilter})</h4>
+                      {(() => {
+                        const trend = analyticsData.trendData || []
+                        const maxVal = Math.max(...trend.map((d: any) => d.orders), 5)
+                        const totalOrders = trend.reduce((sum: number, d: any) => sum + d.orders, 0)
+
+                        return (
+                          <div style={{ position: 'relative' }}>
+                            <div style={{ display: 'flex', alignItems: 'flex-end', height: '150px', gap: trend.length > 12 ? '2px' : '6px', paddingBottom: '10px', borderBottom: '1px solid rgba(255,255,255,0.05)' }}>
+                              {trend.map((d: any, i: number) => {
+                                const heightPct = (d.orders / maxVal) * 100
+                                return (
+                                  <div key={i} style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', height: '100%', justifyContent: 'flex-end' }}>
+                                    <div 
+                                      style={{ 
+                                        width: '100%', 
+                                        height: `${Math.max(heightPct, 3)}%`, 
+                                        backgroundColor: d.orders > 0 ? 'var(--accent)' : 'rgba(255,255,255,0.03)', 
+                                        borderRadius: '3px 3px 0 0',
+                                        transition: 'height 0.3s ease',
+                                        opacity: d.orders > 0 ? 0.85 : 0.4
+                                      }}
+                                      title={`${d.label}: ${d.orders} orders`}
+                                    />
+                                  </div>
+                                )
+                              })}
+                            </div>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '0.4rem', padding: '0 0.5rem' }}>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{trend[0]?.label}</span>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{trend[Math.floor(trend.length / 2)]?.label}</span>
+                              <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)' }}>{trend[trend.length - 1]?.label}</span>
+                            </div>
+                            <div style={{ position: 'absolute', top: 0, right: 0, fontSize: '0.95rem', fontWeight: 'bold', color: 'var(--text-secondary)' }}>
+                              {totalOrders} Orders
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+
+                    {/* Chart 3: Order Status Donut */}
+                    <div className="chart-box" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '12px', padding: '1.25rem' }}>
+                      <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Order Status Split</h4>
+                      {(() => {
+                        const counts = analyticsData.statusCounts || {}
+                        const prep = counts.preparing || 0
+                        const delivery = counts.out_for_delivery || 0
+                        const deliv = counts.delivered || 0
+                        const canc = counts.cancelled || 0
+                        const pend = counts.pending || 0
+                        const total = prep + delivery + deliv + canc + pend
+
+                        const circ = 251.3
+                        const segments = [
+                          { label: 'Delivered', count: deliv, color: 'var(--success)' },
+                          { label: 'Out for Delivery', count: delivery, color: '#3b82f6' },
+                          { label: 'Preparing', count: prep, color: '#eab308' },
+                          { label: 'Pending', count: pend, color: 'rgba(255,255,255,0.4)' },
+                          { label: 'Cancelled', count: canc, color: 'var(--danger)' }
+                        ].filter(s => s.count > 0)
+
+                        let accumulatedPercent = 0
+
+                        return (
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '1.25rem', height: '150px' }}>
+                            <div style={{ position: 'relative', width: '110px', height: '110px', flexShrink: 0 }}>
+                              <svg width="110" height="110" viewBox="0 0 110 110">
+                                <circle cx="55" cy="55" r="40" fill="transparent" stroke="rgba(255,255,255,0.03)" strokeWidth="12" />
+                                {total > 0 && segments.map((seg, idx) => {
+                                  const pct = (seg.count / total) * 100
+                                  const strokeDash = (pct / 100) * circ
+                                  const offset = circ - strokeDash + (accumulatedPercent / 100) * circ
+                                  accumulatedPercent += pct
+                                  return (
+                                    <circle
+                                      key={idx}
+                                      cx="55"
+                                      cy="55"
+                                      r="40"
+                                      fill="transparent"
+                                      stroke={seg.color}
+                                      strokeWidth="12"
+                                      strokeDasharray={`${strokeDash} ${circ}`}
+                                      strokeDashoffset={-offset}
+                                      transform="rotate(-90 55 55)"
+                                    />
+                                  )
+                                })}
+                              </svg>
+                              <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', textAlign: 'center' }}>
+                                <div style={{ fontSize: '1.15rem', fontWeight: 'bold', lineHeight: 1 }}>{total}</div>
+                                <div style={{ fontSize: '0.6rem', color: 'var(--text-muted)', textTransform: 'uppercase', marginTop: '2px' }}>Total</div>
+                              </div>
+                            </div>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem', overflowY: 'auto', width: '100%', maxHeight: '140px' }}>
+                              {segments.length === 0 ? (
+                                <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>No data available</div>
+                              ) : (
+                                segments.map((seg, idx) => (
+                                  <div key={idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                                      <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: seg.color }} />
+                                      <span style={{ color: 'var(--text-secondary)', whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', maxWidth: '90px' }}>{seg.label}</span>
+                                    </div>
+                                    <span style={{ fontWeight: 'bold' }}>{seg.count}</span>
+                                  </div>
+                                ))
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </div>
+
+                    {/* Chart 4: Top Selling Items Progress Bars */}
+                    <div className="chart-box" style={{ background: 'rgba(255,255,255,0.01)', border: '1px solid rgba(255,255,255,0.03)', borderRadius: '12px', padding: '1.25rem' }}>
+                      <h4 style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', marginBottom: '1rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Top Selling Items</h4>
+                      {(() => {
+                        const topItems = analyticsData.topItems || []
+                        const maxQty = topItems.length > 0 ? Math.max(...topItems.map((i: any) => i.quantity), 1) : 1
+
+                        return (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', justifyContent: 'center', height: '150px' }}>
+                            {topItems.length === 0 ? (
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', textAlign: 'center' }}>No items recorded in this range</div>
+                            ) : (
+                              topItems.map((item: any, idx: number) => {
+                                const widthPct = (item.quantity / maxQty) * 100
+                                return (
+                                  <div key={idx} style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.75rem' }}>
+                                      <span style={{ fontWeight: '500', color: 'var(--text-secondary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '140px' }}>
+                                        {idx + 1}. {item.name}
+                                      </span>
+                                      <span style={{ fontWeight: 'bold', color: 'var(--accent)' }}>{item.quantity} sold</span>
+                                    </div>
+                                    <div style={{ width: '100%', height: '6px', borderRadius: '3px', backgroundColor: 'rgba(255,255,255,0.03)', overflow: 'hidden' }}>
+                                      <div 
+                                        style={{ 
+                                          width: `${widthPct}%`, 
+                                          height: '100%', 
+                                          borderRadius: '3px', 
+                                          backgroundColor: 'var(--accent)', 
+                                          opacity: 0.85,
+                                          transition: 'width 0.5s ease' 
+                                        }} 
+                                      />
+                                    </div>
+                                  </div>
+                                )
+                              })
+                            )}
+                          </div>
+                        )
+                      })()}
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              {/* Search & Filters */}
+              <section className="control-bar">
+                <div className="search-wrapper">
+                  <Search size={16} className="search-input-icon" />
+                  <input
+                    type="text"
+                    className="search-input-field"
+                    placeholder="Search by ID, name, or phone number..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                  />
+                </div>
+
+                {/* Segregation Queue Tabs */}
+                <div className="filter-slider" style={{ display: 'flex', gap: '0.4rem', borderBottom: '1px solid rgba(255,255,255,0.05)', paddingBottom: '0.75rem', marginBottom: '0.75rem', width: '100%', overflowX: 'auto' }}>
+                  {[
+                    { key: 'active', label: 'Active Orders' },
+                    { key: 'delivered', label: 'Delivered Orders' },
+                    { key: 'cancelled', label: 'Cancelled Orders' }
+                  ].map(tab => {
+                    const isActive = orderQueue === tab.key
+                    let countText = ''
+                    if (tab.key === 'active') countText = ` (${orders.length})`
+                    return (
+                      <button
+                        key={tab.key}
+                        className={`filter-slider-btn ${isActive ? 'active' : ''}`}
+                        style={{ flex: '1', whiteSpace: 'nowrap', minWidth: '115px', textAlign: 'center', justifyContent: 'center' }}
+                        onClick={() => setOrderQueue(tab.key as any)}
+                      >
+                        {tab.label}{countText}
+                      </button>
+                    )
+                  })}
+                </div>
+
+                {/* Sub-filters slider for Active Orders queue */}
+                {orderQueue === 'active' && (
+                  <div className="filter-slider" style={{ width: '100%', marginBottom: '0.75rem' }}>
+                    {['All Active', 'Pending', 'Preparing', 'Out for Delivery'].map(filter => (
+                      <button
+                        key={filter}
+                        className={`filter-slider-btn ${activeStatusFilter === filter ? 'active' : ''}`}
+                        onClick={() => setActiveStatusFilter(filter as any)}
+                      >
+                        {filter}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {/* Refresh/Logout row */}
+                <div className="refresh-action-row">
+                  <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', height: '32px' }}
+                      onClick={() => {
+                        if (orderQueue === 'active') fetchOrders(true)
+                        else if (orderQueue === 'delivered') fetchDeliveredOrders(true)
+                        else if (orderQueue === 'cancelled') fetchCancelledOrders(true)
+                      }}
+                      disabled={loadingQueue}
+                    >
+                      {loadingQueue ? 'Refreshing...' : 'Refresh Feed'}
+                    </button>
+                    <button
+                      className="btn btn-secondary"
+                      style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', height: '32px' }}
+                      onClick={() => {
+                        window.history.pushState({}, '', '/customer')
+                        setView('customer')
+                      }}
+                    >
+                      Menu <ExternalLink size={12} />
+                    </button>
                   </div>
                   <button
                     className="btn btn-secondary"
-                    style={{ width: '100%', gap: '0.5rem', justifyContent: 'center', color: 'var(--danger)' }}
+                    style={{ padding: '0.4rem 0.8rem', fontSize: '0.75rem', height: '32px', color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
                     onClick={handleAdminLogout}
                   >
-                    <LogOut size={16} /> Log Out
+                    Log Out
                   </button>
                 </div>
-              </aside>
+              </section>
 
-              {/* Main Console Content */}
-              <main className="dashboard-main">
-                {/* Dashboard Header */}
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2.5rem' }}>
-                  <div>
-                    <h1 style={{ fontSize: '1.8rem', fontWeight: '800' }}>Active Order Feed</h1>
-                    <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Real-time synchronization active</p>
-                  </div>
-                  <div style={{ display: 'flex', gap: '0.75rem' }}>
-                    <button className="btn btn-secondary" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }} onClick={() => {
-                      window.history.pushState({}, '', '/')
-                      setView('customer')
-                    }}>
-                      Customer App <ExternalLink size={14} />
-                    </button>
-                    <button className="btn btn-primary" onClick={fetchOrders}>
-                      Refresh Feed
-                    </button>
-                  </div>
-                </div>
-
-                {/* Filter and Search Bar */}
-                <div className="filter-bar">
-                  <div className="search-input-wrapper">
-                    <Search size={16} className="search-icon" />
-                    <input
-                      type="text"
-                      className="form-input search-input"
-                      placeholder="Search orders (ID, customer name, summary...)"
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-
-                  <div className="filters-group">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginRight: '0.5rem' }}>
-                      <Filter size={14} style={{ color: 'var(--text-muted)' }} />
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Order:</span>
-                    </div>
-                    {['All', 'New', 'Preparing', 'Ready', 'Delivered', 'Cancelled'].map(filter => (
-                      <button
-                        key={filter}
-                        className={`filter-btn ${statusFilter === filter ? 'active' : ''}`}
-                        onClick={() => setStatusFilter(filter)}
-                      >
-                        {filter}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="filters-group">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', marginRight: '0.5rem' }}>
-                      <CreditCard size={14} style={{ color: 'var(--text-muted)' }} />
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Payment:</span>
-                    </div>
-                    {['All', 'Pending', 'Paid', 'Failed'].map(filter => (
-                      <button
-                        key={filter}
-                        className={`filter-btn ${paymentFilter === filter ? 'active' : ''}`}
-                        onClick={() => setPaymentFilter(filter)}
-                      >
-                        {filter}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Order Table */}
-                <div className="table-container">
-                  {loadingOrders ? (
-                    <div style={{ padding: '4rem 0', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: 'var(--text-secondary)' }}>
-                      <div className="flex-center" style={{ width: '40px', height: '40px', borderRadius: '50%', border: '2px solid var(--border)', borderTopColor: 'var(--accent)', animation: 'spin 1s linear infinite', marginBottom: '1rem' }} />
-                      <span>Loading incoming orders...</span>
-                    </div>
-                  ) : filteredOrders.length === 0 ? (
-                    <div style={{ padding: '4rem 0', textAlign: 'center', color: 'var(--text-secondary)' }}>
-                      <Bell size={48} style={{ opacity: 0.15, marginBottom: '1rem' }} />
-                      <p>No orders found matching the filter criteria.</p>
-                    </div>
-                  ) : (
-                    <table className="order-table">
-                      <thead>
-                        <tr>
-                          <th>ID</th>
-                          <th>Time</th>
-                          <th>Customer</th>
-                          <th>Phone</th>
-                          <th>Item Summary</th>
-                          <th>Total</th>
-                          <th>Payment Status</th>
-                          <th>Order Status</th>
-                          <th>Actions</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {filteredOrders.map(order => (
-                          <tr key={order.id} style={{ cursor: 'pointer' }} onClick={() => setSelectedOrder(order)}>
-                            <td style={{ fontWeight: 'bold' }}>#{order.id}</td>
-                            <td className="order-time">
-                              {new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                              <div style={{ fontSize: '0.65rem' }}>{new Date(order.created_at).toLocaleDateString()}</div>
-                            </td>
-                            <td style={{ fontWeight: '500' }}>{order.customer_name}</td>
-                            <td style={{ fontSize: '0.85rem' }}>{order.phone}</td>
-                            <td>
-                              <div className="order-summary-text" title={order.item_summary}>
-                                {order.item_summary}
-                              </div>
-                            </td>
-                            <td style={{ fontWeight: 'bold', color: 'var(--accent)' }}>₹{order.total}</td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <select
-                                className="select-dark"
-                                value={order.payment_status}
-                                onChange={(e) => handleUpdateStatus(order.id, 'payment', e.target.value)}
-                              >
-                                <option value="pending">Pending</option>
-                                <option value="paid">Paid</option>
-                                <option value="failed">Failed</option>
-                              </select>
-                            </td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <select
-                                className={`select-dark badge-${order.order_status}`}
-                                value={order.order_status}
-                                onChange={(e) => handleUpdateStatus(order.id, 'order', e.target.value)}
-                                style={{ fontWeight: 'bold' }}
-                              >
-                                <option value="new">New</option>
-                                <option value="preparing">Preparing</option>
-                                <option value="ready">Ready</option>
-                                <option value="delivered">Delivered</option>
-                                <option value="cancelled">Cancelled</option>
-                              </select>
-                            </td>
-                            <td onClick={(e) => e.stopPropagation()}>
-                              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                                {order.maps_link ? (
-                                  <a href={order.maps_link} target="_blank" rel="noopener noreferrer" className="btn btn-secondary btn-icon" title="View Map Route" style={{ width: '32px', height: '32px' }}>
-                                    <MapPin size={14} />
-                                  </a>
-                                ) : (
-                                  <div style={{ width: '32px', height: '32px' }} />
-                                )}
-                                <button className="btn btn-secondary btn-icon" style={{ width: '32px', height: '32px' }} onClick={() => setSelectedOrder(order)} title="View Details">
-                                  <ArrowRight size={14} />
-                                </button>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-
-                {/* Live sound and Toast alert for new orders */}
-                {newOrderToast && (
-                  <div className="toast">
-                    <Bell size={18} style={{ color: 'var(--accent)', animation: 'bounce 1s infinite' }} />
-                    <div>
-                      <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>New Order Received!</div>
-                      <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>#{newOrderToast.id} from {newOrderToast.name}</div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Detailed view Modal */}
-                {selectedOrder && (
-                  <div className="checkout-modal-overlay" onClick={() => setSelectedOrder(null)}>
-                    <div className="checkout-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
-                      <div className="checkout-header">
-                        <h2 className="brand-title" style={{ fontSize: '1.1rem' }}>Order Details #{selectedOrder.id}</h2>
-                        <button onClick={() => setSelectedOrder(null)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
-                          <X size={20} />
-                        </button>
+              {/* Live Orders Feed */}
+              <section className="orders-feed-container">
+                {loadingQueue ? (
+                  // Loading skeleton (3 cards)
+                  Array.from({ length: 3 }).map((_, idx) => (
+                    <div key={idx} className="order-glass-card" style={{ gap: '0.75rem' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                        <div className="skeleton-box" style={{ width: '80px', height: '16px' }} />
+                        <div className="skeleton-box" style={{ width: '60px', height: '16px' }} />
                       </div>
-                      <div className="checkout-body">
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', paddingBottom: '1.25rem', borderBottom: '1px solid var(--border)' }}>
-                          <div>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Customer Details</span>
-                            <div style={{ fontWeight: 'bold', fontSize: '1.05rem', marginTop: '0.2rem' }}>{selectedOrder.customer_name}</div>
-                            <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
-                              <Phone size={12} /> {selectedOrder.phone}
-                            </div>
-                          </div>
-                          <div>
-                            <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Delivery Context</span>
-                            <div style={{ fontSize: '0.8rem', marginTop: '0.2rem' }}>Placed: {new Date(selectedOrder.created_at).toLocaleString()}</div>
-                            {selectedOrder.maps_link ? (
-                              <>
-                                <a href={selectedOrder.maps_link} target="_blank" rel="noopener noreferrer" className="link-maps" style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>
-                                  <MapPin size={12} /> View Google Maps Link <ExternalLink size={10} />
-                                </a>
-                                {(() => {
-                                  const coords = getCoordinatesFromUrl(selectedOrder.maps_link)
-                                  return coords ? (
-                                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-                                      Coordinates: {coords.lat.toFixed(6)}, {coords.lng.toFixed(6)}
-                                    </div>
-                                  ) : null
-                                })()}
-                              </>
-                            ) : (
-                              <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>No Location details provided</div>
-                            )}
-                          </div>
+                      <div className="skeleton-box" style={{ width: '150px', height: '20px' }} />
+                      <div className="skeleton-box" style={{ width: '100px', height: '14px' }} />
+                      <div className="skeleton-box" style={{ width: '100%', height: '80px', borderRadius: '8px' }} />
+                      <div style={{ display: 'flex', gap: '0.5rem' }}>
+                        <div className="skeleton-box" style={{ width: '60px', height: '22px', borderRadius: '50px' }} />
+                        <div className="skeleton-box" style={{ width: '80px', height: '22px', borderRadius: '50px' }} />
+                      </div>
+                    </div>
+                  ))
+                ) : filteredOrders.length === 0 ? (
+                  <div className="empty-state-block">
+                    <ShoppingBag size={36} style={{ color: 'var(--text-muted)' }} />
+                    <p style={{ fontWeight: '500' }}>No orders found</p>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                      There are no orders matching your current search or filter criteria.
+                    </p>
+                  </div>
+                ) : (
+                  filteredOrders.map(order => {
+                    const status = order.order_status?.toLowerCase() || 'pending'
+                    const pStatus = order.payment_status?.toLowerCase() || 'pending'
+                    const timeString = new Date(order.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                    const dateString = new Date(order.created_at).toLocaleDateString([], { month: 'short', day: 'numeric' })
+                    
+                    return (
+                      <div key={order.id} className="order-glass-card" onClick={() => setSelectedOrder(order)}>
+                        <div className="order-card-row-top">
+                          <span className="order-card-id">Order #{order.id}</span>
+                          <span className="order-card-time">{timeString} • {dateString}</span>
                         </div>
 
-                        <h4 style={{ marginBottom: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Order Items Summary</h4>
-                        <div style={{ backgroundColor: 'var(--bg-tertiary)', borderRadius: '8px', padding: '1rem', marginBottom: '1.25rem' }}>
-                          {selectedOrder.items && Array.isArray(selectedOrder.items) ? (
-                            selectedOrder.items.map((cartItem: any, idx: number) => (
-                              <div key={idx} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.85rem', paddingBottom: '0.4rem', marginBottom: '0.4rem', borderBottom: idx < selectedOrder.items.length - 1 ? '1px solid rgba(255, 255, 255, 0.05)' : 'none' }}>
-                                <span>
-                                  {cartItem.quantity} x {cartItem.item?.name || 'Item'}
-                                </span>
-                                <span style={{ fontWeight: 'bold' }}>₹{cartItem.activePrice * cartItem.quantity}</span>
-                              </div>
-                            ))
-                          ) : (
-                            <p style={{ fontSize: '0.85rem' }}>{selectedOrder.item_summary}</p>
+                        <div className="order-card-cust-info" onClick={(e) => e.stopPropagation()}>
+                          <span className="order-card-name">{order.customer_name}</span>
+                          <a href={`tel:${order.phone}`} className="order-card-phone-link">
+                            <Phone size={12} /> {order.phone}
+                          </a>
+                        </div>
+
+                        {/* Order items summary parser */}
+                        {renderOrderSummary(order)}
+
+                        <div className="order-card-badges">
+                          {/* Payment status badge */}
+                          <span className={`badge badge-${pStatus === 'paid' ? 'paid' : pStatus === 'failed' ? 'failed' : 'pending'}`}>
+                            {pStatus === 'paid' ? 'Paid' : pStatus === 'failed' ? 'Failed' : 'Payment: Pending'}
+                          </span>
+                          
+                          {/* Order status badge */}
+                          <span className={`badge badge-${status === 'preparing' ? 'preparing' : status === 'out_for_delivery' ? 'ready' : status === 'delivered' ? 'delivered' : status === 'cancelled' ? 'cancelled' : 'new'}`}>
+                            {status === 'out_for_delivery' ? 'Out for Delivery' : status}
+                          </span>
+                        </div>
+
+                        {/* Order Action Buttons & Phone / Maps buttons */}
+                        <div className="order-card-action-bar" onClick={(e) => e.stopPropagation()}>
+                          <a href={`tel:${order.phone}`} className="action-btn-dashboard secondary-dark" style={{ textDecoration: 'none' }}>
+                            <Phone size={14} /> Call Customer
+                          </a>
+                          
+                          <button
+                            className="action-btn-dashboard secondary-dark"
+                            onClick={() => {
+                              if (order.maps_link) {
+                                window.open(order.maps_link, '_blank')
+                              } else {
+                                alert('No map link available for this order')
+                              }
+                            }}
+                            disabled={!order.maps_link || order.maps_link === 'Manual Location'}
+                          >
+                            <MapPin size={14} /> Google Maps
+                          </button>
+                        </div>
+
+                        {/* Workflow Transitions */}
+                        <div className="order-card-action-bar" onClick={(e) => e.stopPropagation()} style={{ borderTop: '1px solid rgba(255, 255, 255, 0.05)', paddingTop: '0.75rem' }}>
+                          {status === 'pending' && (
+                            <>
+                              <button
+                                className="action-btn-dashboard success-green"
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'preparing')}
+                              >
+                                Accept Order
+                              </button>
+                              <button
+                                className="action-btn-dashboard secondary-dark"
+                                style={{ color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'cancelled')}
+                              >
+                                Cancel Order
+                              </button>
+                            </>
                           )}
 
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.85rem', borderTop: '1px solid var(--border)', paddingTop: '0.4rem' }}>
-                            <span>Subtotal</span>
-                            <span>₹{selectedOrder.subtotal}</span>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.8rem', color: 'var(--text-secondary)', marginTop: '0.25rem' }}>
-                            <span>Parcel Charge</span>
-                            <span>₹{selectedOrder.packaging}</span>
-                          </div>
-                          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '1rem', fontWeight: 'bold', color: '#fff', marginTop: '0.4rem' }}>
-                            <span>Grand Total</span>
-                            <span style={{ color: 'var(--accent)' }}>₹{selectedOrder.total}</span>
-                          </div>
-                        </div>
+                          {status === 'preparing' && (
+                            <>
+                              <button
+                                className="action-btn-dashboard success-green"
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'out_for_delivery')}
+                              >
+                                Mark Out for Delivery
+                              </button>
+                              <button
+                                className="action-btn-dashboard secondary-dark"
+                                style={{ color: 'var(--danger)', borderColor: 'rgba(239, 68, 68, 0.2)' }}
+                                onClick={() => handleUpdateStatus(order.id, 'order', 'cancelled')}
+                              >
+                                Cancel Order
+                              </button>
+                            </>
+                          )}
 
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-                          <div className="form-group">
-                            <label className="form-label">Payment Status</label>
-                            <select
-                              className="select-dark"
-                              style={{ width: '100%', height: '40px' }}
-                              value={selectedOrder.payment_status}
-                              onChange={(e) => handleUpdateStatus(selectedOrder.id, 'payment', e.target.value)}
+                          {status === 'out_for_delivery' && (
+                            <button
+                              className="action-btn-dashboard success-green"
+                              style={{ gridColumn: 'span 2' }}
+                              onClick={() => handleUpdateStatus(order.id, 'order', 'delivered')}
                             >
-                              <option value="pending">Pending</option>
-                              <option value="paid">Paid</option>
-                              <option value="failed">Failed</option>
-                            </select>
-                          </div>
-                          <div className="form-group">
-                            <label className="form-label">Order Status</label>
-                            <select
-                              className="select-dark"
-                              style={{ width: '100%', height: '40px' }}
-                              value={selectedOrder.order_status}
-                              onChange={(e) => handleUpdateStatus(selectedOrder.id, 'order', e.target.value)}
-                            >
-                              <option value="new">New</option>
-                              <option value="preparing">Preparing</option>
-                              <option value="ready">Ready</option>
-                              <option value="delivered">Delivered</option>
-                              <option value="cancelled">Cancelled</option>
-                            </select>
-                          </div>
-                        </div>
+                              Mark Delivered
+                            </button>
+                          )}
 
-                        <button
-                          className="btn btn-secondary"
-                          style={{ width: '100%', marginTop: '1.25rem' }}
-                          onClick={() => setSelectedOrder(null)}
-                        >
-                          Close Details
-                        </button>
+                          {status === 'delivered' && (
+                            <div className="status-text-badge" style={{ gridColumn: 'span 2', color: 'var(--success)', justifyContent: 'center' }}>
+                              ✅ Delivered
+                            </div>
+                          )}
+
+                          {status === 'cancelled' && (
+                            <div className="status-text-badge" style={{ gridColumn: 'span 2', color: 'var(--danger)', justifyContent: 'center' }}>
+                              ❌ Cancelled
+                            </div>
+                          )}
+                        </div>
                       </div>
+                    )
+                  })
+                )}
+              </section>
+
+              {filteredOrders.length > 0 && queueHasMore && (
+                <div style={{ display: 'flex', justifyContent: 'center', marginTop: '1.5rem', marginBottom: '2.5rem' }}>
+                  <button
+                    className="btn btn-secondary"
+                    style={{ padding: '0.6rem 1.5rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.1)' }}
+                    onClick={() => {
+                      if (orderQueue === 'active') fetchOrders(false)
+                      else if (orderQueue === 'delivered') fetchDeliveredOrders(false)
+                      else if (orderQueue === 'cancelled') fetchCancelledOrders(false)
+                    }}
+                    disabled={loadingQueue}
+                  >
+                    {loadingQueue ? 'Loading...' : 'Load More Orders'}
+                  </button>
+                </div>
+              )}
+
+              {/* Status change Toast alert */}
+              {statusToast && (
+                <div className="toast">
+                  <CheckCircle size={18} style={{ color: 'var(--success)' }} />
+                  <div>
+                    <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>{statusToast}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Live sound and Toast alert for new incoming orders */}
+              {newOrderToast && (
+                <div className="toast" style={{ border: '1px solid var(--success)' }}>
+                  <Bell size={18} style={{ color: 'var(--success)', animation: 'bounce 1s infinite' }} />
+                  <div>
+                    <div style={{ fontWeight: 'bold', fontSize: '0.9rem' }}>New Order Received!</div>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>#{newOrderToast.id} from {newOrderToast.name}</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Detailed view Modal */}
+              {selectedOrder && (
+                <div className="checkout-modal-overlay" onClick={() => setSelectedOrder(null)}>
+                  <div className="checkout-modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: '600px' }}>
+                    <div className="checkout-header">
+                      <h2 className="brand-title" style={{ fontSize: '1.1rem' }}>Order Details #{selectedOrder.id}</h2>
+                      <button onClick={() => setSelectedOrder(null)} style={{ background: 'none', border: 'none', color: '#fff', cursor: 'pointer' }}>
+                        <X size={20} />
+                      </button>
+                    </div>
+                    <div className="checkout-body">
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1.25rem', paddingBottom: '1.25rem', borderBottom: '1px solid var(--border)' }}>
+                        <div>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Customer Details</span>
+                          <div style={{ fontWeight: 'bold', fontSize: '1.05rem', marginTop: '0.2rem' }}>{selectedOrder.customer_name}</div>
+                          <div style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.25rem', marginTop: '0.25rem' }}>
+                            <Phone size={12} /> {selectedOrder.phone}
+                          </div>
+                        </div>
+                        <div>
+                          <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Delivery Context</span>
+                          <div style={{ fontSize: '0.8rem', marginTop: '0.2rem' }}>Placed: {new Date(selectedOrder.created_at).toLocaleString()}</div>
+                          {selectedOrder.maps_link ? (
+                            <>
+                              <a href={selectedOrder.maps_link} target="_blank" rel="noopener noreferrer" className="link-maps" style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>
+                                <MapPin size={12} /> View Google Maps Link <ExternalLink size={10} />
+                              </a>
+                            </>
+                          ) : (
+                            <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>No Location details provided</div>
+                          )}
+                        </div>
+                      </div>
+
+                      <h4 style={{ marginBottom: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>Order Items Summary</h4>
+                      {renderOrderSummary(selectedOrder)}
+
+                      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1.2fr', gap: '1.5rem', marginTop: '1.25rem', borderTop: '1px solid var(--border)', paddingTop: '1.25rem' }}>
+                        <div className="form-group">
+                          <label className="form-label" style={{ marginBottom: '0.5rem' }}>Payment Status</label>
+                          <select
+                            className="select-dark"
+                            style={{ width: '100%', height: '40px', borderRadius: '10px' }}
+                            value={selectedOrder.payment_status}
+                            onChange={(e) => handleUpdateStatus(selectedOrder.id, 'payment', e.target.value)}
+                          >
+                            <option value="pending">Pending</option>
+                            <option value="paid">Paid</option>
+                            <option value="failed">Failed</option>
+                          </select>
+                        </div>
+                        <div className="form-group">
+                          <label className="form-label" style={{ marginBottom: '0.5rem' }}>Order Status Controls</label>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                            {[
+                              { label: 'Pending', value: 'pending' },
+                              { label: 'Preparing', value: 'preparing' },
+                              { label: 'Out for Delivery', value: 'out_for_delivery' },
+                              { label: 'Delivered', value: 'delivered' },
+                              { label: 'Cancelled', value: 'cancelled' }
+                            ].map(statusOpt => {
+                              const isActive = (selectedOrder.order_status || 'pending').toLowerCase() === statusOpt.value
+                              
+                              let btnClass = 'secondary-dark'
+                              if (isActive) {
+                                if (statusOpt.value === 'cancelled') btnClass = 'secondary-dark'
+                                else if (statusOpt.value === 'preparing' || statusOpt.value === 'out_for_delivery' || statusOpt.value === 'delivered') btnClass = 'success-green'
+                                else btnClass = 'btn-primary'
+                              }
+                              
+                              const customStyle: React.CSSProperties = {
+                                width: '100%',
+                                height: '36px',
+                                justifyContent: 'center',
+                                borderRadius: '10px',
+                                fontSize: '0.8rem',
+                                fontWeight: '700',
+                                padding: '0 1rem',
+                                opacity: isActive ? 1 : 0.6
+                              }
+                              
+                              if (isActive && statusOpt.value === 'cancelled') {
+                                customStyle.color = 'var(--danger)'
+                                customStyle.borderColor = 'var(--danger)'
+                                customStyle.backgroundColor = 'rgba(239, 68, 68, 0.1)'
+                              }
+
+                              return (
+                                <button
+                                  key={statusOpt.value}
+                                  type="button"
+                                  className={`action-btn-dashboard ${btnClass}`}
+                                  style={customStyle}
+                                  onClick={() => handleUpdateStatus(selectedOrder.id, 'order', statusOpt.value)}
+                                >
+                                  {statusOpt.value === 'delivered' ? '✅ ' : statusOpt.value === 'cancelled' ? '❌ ' : ''}
+                                  {statusOpt.label}
+                                </button>
+                              )
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        className="btn btn-secondary"
+                        style={{ width: '100%', marginTop: '1.25rem' }}
+                        onClick={() => setSelectedOrder(null)}
+                      >
+                        Close Details
+                      </button>
                     </div>
                   </div>
-                )}
-              </main>
+                </div>
+              )}
             </div>
           )}
         </div>
