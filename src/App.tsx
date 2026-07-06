@@ -32,17 +32,18 @@ interface SupabaseOrder {
   id: string
   customer_name: string
   phone: string
-  item_summary: string
+  order_summary: string
+  location_type: string
   items: CartItem[]
   subtotal: number
   packaging: number
   total: number
   payment_status: string
   order_status: string
-  maps_link: string
-  latitude?: number | null
-  longitude?: number | null
-  manual_address?: string | null
+  maps_link: string | null
+  latitude: number | null
+  longitude: number | null
+  manual_address: string | null
   created_at: string
 }
 
@@ -410,7 +411,7 @@ export default function App() {
       
       const { data, error } = await client
         .from('orders')
-        .select('*, manual_address, latitude, longitude, maps_link')
+        .select('*')
         .in('order_status', ['new', 'pending', 'preparing', 'out_for_delivery'])
         .order('created_at', { ascending: false })
         .range(start, end)
@@ -451,7 +452,7 @@ export default function App() {
       
       const { data, error } = await client
         .from('orders')
-        .select('*, manual_address, latitude, longitude, maps_link')
+        .select('*')
         .eq('order_status', 'delivered')
         .order('created_at', { ascending: false })
         .range(start, end)
@@ -492,7 +493,7 @@ export default function App() {
       
       const { data, error } = await client
         .from('orders')
-        .select('*, manual_address, latitude, longitude, maps_link')
+        .select('*')
         .eq('order_status', 'cancelled')
         .order('created_at', { ascending: false })
         .range(start, end)
@@ -610,8 +611,8 @@ export default function App() {
           const qty = cartItem.quantity || 1
           itemsMap[name] = (itemsMap[name] || 0) + qty
         })
-      } else if (o.item_summary) {
-        const parts = o.item_summary.split(',')
+      } else if (o.order_summary) {
+        const parts = o.order_summary.split(',')
         parts.forEach((p: string) => {
           const trimmed = p.trim()
           const match = trimmed.match(/^(\d+)x\s+(.+)$/)
@@ -664,7 +665,7 @@ export default function App() {
 
       const { data, error } = await client
         .from('orders')
-        .select('created_at, total, order_status, items, item_summary, manual_address, latitude, longitude, maps_link')
+        .select('*')
         .gte('created_at', cutoff.toISOString())
 
       if (error) throw error
@@ -1044,28 +1045,21 @@ export default function App() {
 
     setSubmittingOrder(true)
 
-    // Format item summary for quick counter display
-    const itemSummary = cart.map(i => `${i.quantity} x ${i.item.name}`).join(', ')
+    // Format order summary for quick counter display
+    const orderSummary = cart.map(i => `${i.quantity} x ${i.item.name}`).join(', ')
 
     // Format location details
-    let itemsPayload = [...cart]
-
-    if (locationMode === 'manual') {
-      // Store address inside items JSONB payload
-      itemsPayload.push({
-        isAddressMetadata: true,
-        formattedAddress: manualAddress.trim()
-      } as any)
-    }
+    
 
     const orderData = {
       customer_name: customerName,
       phone: phone,
-      item_summary: itemSummary,
-      items: itemsPayload,
+      order_summary: orderSummary,
+      items: cart,
       subtotal: subtotal,
       packaging: packagingFee,
       total: total,
+      location_type: locationMode,
       maps_link: locationMode === 'gps' ? mapsLink : null,
       latitude: locationMode === 'gps' ? latitude : null,
       longitude: locationMode === 'gps' ? longitude : null,
@@ -1076,7 +1070,7 @@ export default function App() {
       const { data, error } = await client
         .from('orders')
         .insert(orderData)
-        .select('*, manual_address, latitude, longitude, maps_link')
+        .select('*')
         .single()
 
       if (error) throw error
@@ -1097,7 +1091,8 @@ export default function App() {
           order_id: data.id,
           customer_name: data.customer_name,
           phone: data.phone,
-          item_summary: data.item_summary,
+          order_summary: data.order_summary,
+          location_type: data.location_type,
           total: data.total,
           order_status: data.order_status,
           maps_link: data.maps_link,
@@ -1198,7 +1193,7 @@ export default function App() {
 
     return (
       <div className="order-summary-block">
-        <div style={{ whiteSpace: 'pre-line' }}>{order.item_summary}</div>
+        <div style={{ whiteSpace: 'pre-line' }}>{order.order_summary}</div>
         <div className="order-summary-item" style={{ marginTop: '0.5rem' }}>
           <span>Packaging</span>
           <span>₹{order.packaging || 0}</span>
@@ -1223,7 +1218,7 @@ export default function App() {
     return currentList.filter(order => {
       const nameMatch = order.customer_name?.toLowerCase() || ''
       const phoneMatch = order.phone || ''
-      const summaryMatch = order.item_summary?.toLowerCase() || ''
+      const summaryMatch = order.order_summary?.toLowerCase() || ''
       const idMatch = order.id?.toString() || ''
       
       const matchesSearch = !query || 
@@ -2298,15 +2293,14 @@ export default function App() {
                           </a>
                         </div>
 
-                        {order.manual_address ? (
+                        {order.location_type === 'manual' && order.manual_address ? (
                           <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.35rem', lineHeight: '1.3' }}>
                             <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', marginBottom: '2px' }}>Delivery Address</div>
                             <div style={{ whiteSpace: 'pre-line', wordBreak: 'break-word' }}>{order.manual_address}</div>
                           </div>
-                        ) : (order.maps_link && !order.maps_link.startsWith('http')) ? (
-                          <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginTop: '0.35rem', lineHeight: '1.3' }}>
-                            <div style={{ fontWeight: '600', color: 'var(--text-muted)', fontSize: '0.65rem', textTransform: 'uppercase', marginBottom: '2px' }}>Delivery Address</div>
-                            <div style={{ whiteSpace: 'pre-line', wordBreak: 'break-word' }}>{order.maps_link}</div>
+                        ) : order.location_type === 'gps' && order.latitude !== null && order.latitude !== undefined && order.longitude !== null && order.longitude !== undefined ? (
+                          <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.3rem' }}>
+                            Coordinates: {order.latitude.toFixed(6)}, {order.longitude.toFixed(6)}
                           </div>
                         ) : null}
 
@@ -2331,17 +2325,12 @@ export default function App() {
                             <Phone size={14} /> Call Customer
                           </a>
                           
-                          {(!order.manual_address && (!order.maps_link || order.maps_link.startsWith('http'))) && (
+                          {order.location_type === 'gps' && order.maps_link && (
                             <button
                               className="action-btn-dashboard secondary-dark"
                               onClick={() => {
-                                if (order.maps_link) {
-                                  window.open(order.maps_link, '_blank')
-                                } else {
-                                  alert('No map link available for this order')
-                                }
+                                window.open(order.maps_link!, '_blank')
                               }}
-                              disabled={!order.maps_link}
                             >
                               <MapPin size={14} /> Google Maps
                             </button>
@@ -2474,22 +2463,22 @@ export default function App() {
                         <div>
                           <span style={{ fontSize: '0.75rem', color: 'var(--text-secondary)' }}>Delivery Context</span>
                           <div style={{ fontSize: '0.8rem', marginTop: '0.2rem' }}>Placed: {new Date(selectedOrder.created_at).toLocaleString()}</div>
-                          {selectedOrder.manual_address ? (
-                            <div style={{ fontSize: '0.85rem', color: '#fff', marginTop: '0.25rem', lineHeight: '1.4' }}>
-                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.15rem' }}>Delivery Address</div>
-                              <div style={{ whiteSpace: 'pre-line', wordBreak: 'break-word' }}>{selectedOrder.manual_address}</div>
-                            </div>
-                          ) : selectedOrder.maps_link ? (
-                            selectedOrder.maps_link.startsWith('http') ? (
-                              <a href={selectedOrder.maps_link} target="_blank" rel="noopener noreferrer" className="link-maps" style={{ fontSize: '0.8rem', marginTop: '0.25rem' }}>
+                          {selectedOrder.location_type === 'gps' && selectedOrder.maps_link ? (
+                            <>
+                              <a href={selectedOrder.maps_link} target="_blank" rel="noopener noreferrer" className="link-maps" style={{ fontSize: '0.8rem', marginTop: '0.25rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
                                 <MapPin size={12} /> View Google Maps Link <ExternalLink size={10} />
                               </a>
-                            ) : (
-                              <div style={{ fontSize: '0.85rem', color: '#fff', marginTop: '0.25rem', lineHeight: '1.4' }}>
-                                <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.15rem' }}>Delivery Address</div>
-                                <div style={{ whiteSpace: 'pre-line', wordBreak: 'break-word' }}>{selectedOrder.maps_link}</div>
-                              </div>
-                            )
+                              {selectedOrder.latitude !== null && selectedOrder.latitude !== undefined && selectedOrder.longitude !== null && selectedOrder.longitude !== undefined && (
+                                <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+                                  Coordinates: {selectedOrder.latitude.toFixed(6)}, {selectedOrder.longitude.toFixed(6)}
+                                </div>
+                              )}
+                            </>
+                          ) : selectedOrder.location_type === 'manual' && selectedOrder.manual_address ? (
+                            <div style={{ fontSize: '0.85rem', color: '#fff', marginTop: '0.25rem', lineHeight: '1.4' }}>
+                              <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', marginBottom: '0.15rem', display: 'flex', alignItems: 'center', gap: '0.25rem' }}><MapPin size={12} /> Delivery Address</div>
+                              <div style={{ whiteSpace: 'pre-line', wordBreak: 'break-word', padding: '0.5rem', backgroundColor: 'rgba(255,255,255,0.03)', border: '1px solid var(--border)', borderRadius: '6px' }}>{selectedOrder.manual_address}</div>
+                            </div>
                           ) : (
                             <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>No Location details provided</div>
                           )}
